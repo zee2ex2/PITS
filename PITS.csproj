@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+    <PropertyGroup>
+        <TargetFramework>net10.0</TargetFramework>
+        <Nullable>enable</Nullable>
+        <ImplicitUsings>enable</ImplicitUsings>
+        <BlazorDisableThrowNavigationException>true</BlazorDisableThrowNavigationException>
+        <Title>Personal Inventory Tracking System</Title>
+        <Authors>SCIM</Authors>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.0-preview.3.25171.6" />
+        <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.0-preview.3.25171.6" />
+        <PackageReference Include="Microsoft.CodeAnalysis.CSharp.Scripting" Version="4.13.0" />
+        <PackageReference Include="System.Linq.Dynamic.Core" Version="1.6.0.2" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <Content Include="..\ShoWER\seed_data.json" Link="seed_data.json">
+            <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+        </Content>
+    </ItemGroup>
+
+</Project>

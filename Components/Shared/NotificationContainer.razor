@@ -1,0 +1,102 @@
+@inject Services.NotificationService NotificationService
+@inject Services.SessionNotificationStore NotificationStore
+
+@if (_activeBanners.Count > 0)
+{
+    <div class="notification-container">
+        @foreach (var banner in _activeBanners)
+        {
+            <div class="notification-banner notification-@GetTypeClass(banner.Notification) @(banner.IsLeaving ? "dismissing" : "")">
+                <div class="notification-content">
+                    <span class="notification-text">@banner.Notification.Message</span>
+                    <button class="notification-dismiss" @onclick="() => Dismiss(banner.Notification.Id)">Dismiss</button>
+                </div>
+            </div>
+        }
+    </div>
+}
+
+@code {
+    private readonly List<BannerState> _activeBanners = new();
+
+    private class BannerState
+    {
+        public AppNotification Notification { get; set; } = null!;
+        public bool IsLeaving { get; set; }
+    }
+
+    protected override void OnInitialized()
+    {
+        NotificationService.OnNotification += OnNotificationReceived;
+    }
+
+    private async void OnNotificationReceived(AppNotification notification)
+    {
+        await InvokeAsync(() =>
+        {
+            NotificationStore.Add(notification);
+
+            var banner = new BannerState { Notification = notification };
+            _activeBanners.Add(banner);
+            StateHasChanged();
+
+            if (notification.Type == NotificationType.Success)
+            {
+                _ = AutoDismissAsync(banner, 6000);
+            }
+        });
+    }
+
+    private async Task AutoDismissAsync(BannerState banner, int delayMs)
+    {
+        await Task.Delay(delayMs);
+        await InvokeAsync(() =>
+        {
+            banner.IsLeaving = true;
+            StateHasChanged();
+
+            _ = Task.Delay(300).ContinueWith(_ =>
+            {
+                InvokeAsync(() =>
+                {
+                    _activeBanners.Remove(banner);
+                    NotificationStore.AutoDismiss(banner.Notification.Id);
+                    StateHasChanged();
+                });
+            });
+        });
+    }
+
+    private void Dismiss(string id)
+    {
+        var banner = _activeBanners.FirstOrDefault(b => b.Notification.Id == id);
+        if (banner == null) return;
+
+        banner.IsLeaving = true;
+        StateHasChanged();
+
+        _ = Task.Delay(300).ContinueWith(_ =>
+        {
+            InvokeAsync(() =>
+            {
+                _activeBanners.Remove(banner);
+                NotificationStore.Dismiss(id);
+                StateHasChanged();
+            });
+        });
+    }
+
+    private static string GetTypeClass(AppNotification n) => n.Type switch
+    {
+        NotificationType.Success => "success",
+        NotificationType.Warning => "warning",
+        NotificationType.SystemError => "system-error",
+        NotificationType.UserError => "user-error",
+        _ => "info"
+    };
+
+    public void Dispose()
+    {
+        NotificationService.OnNotification -= OnNotificationReceived;
+    }
+}

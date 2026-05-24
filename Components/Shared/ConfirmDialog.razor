@@ -1,0 +1,52 @@
+@if (_visible)
+{
+    <div class="modal-overlay" @onclick="Cancel" @onkeydown="HandleKeydown" tabindex="0">
+        <div class="modal" @onclick:stopPropagation>
+            <div class="modal-header">
+                <h2>@Title</h2>
+                <button class="btn-close" @onclick="Cancel">&times;</button>
+            </div>
+            <p>@Message</p>
+            <div class="form-actions">
+                <button class="btn btn-secondary" @onclick="Cancel">Cancel</button>
+                <button class="btn btn-danger" @onclick="Confirm">@ConfirmText</button>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    [Parameter] public string Title { get; set; } = "Confirm";
+    [Parameter] public string Message { get; set; } = "Are you sure?";
+    [Parameter] public string ConfirmText { get; set; } = "Confirm";
+
+    private bool _visible;
+    private TaskCompletionSource<bool>? _tcs;
+
+    public async Task<bool> ShowAsync()
+    {
+        _visible = true;
+        _tcs = new TaskCompletionSource<bool>();
+        StateHasChanged();
+        return await _tcs.Task;
+    }
+
+    private void Confirm()
+    {
+        _visible = false;
+        _tcs?.TrySetResult(true);
+        StateHasChanged();
+    }
+
+    private void Cancel()
+    {
+        _visible = false;
+        _tcs?.TrySetResult(false);
+        StateHasChanged();
+    }
+
+    private void HandleKeydown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Escape") Cancel();
+    }
+}

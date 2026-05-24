@@ -1,0 +1,853 @@
+﻿@page "/"
+@using Microsoft.EntityFrameworkCore
+@implements IDisposable
+@inject IServiceScopeFactory ServiceScopeFactory
+@inject Services.InventoryService InventoryService
+@inject Services.InventoryChangeNotifier ChangeNotifier
+
+<PageTitle>Inventory - PITS</PageTitle>
+
+<h1 class="page-title">Inventory</h1>
+
+<div class="card">
+    <h3 class="card-title">Add Item</h3>
+    <div class="add-form">
+        <div class="add-form-row">
+            <div class="add-form-field">
+                <label>Item</label>
+                <div class="add-search-wrap">
+                    @if (_addItemId.HasValue)
+                    {
+                        <div class="selected-tag">
+                            @_addItemName
+                            <button class="btn-close-sm" @onclick="ClearAddItem">&times;</button>
+                        </div>
+                    }
+                    else
+                    {
+                        <input type="text" placeholder="Search item..." @bind="ItemSearchText" @bind:event="oninput"
+                               @onkeydown="OnAddItemKeydown" @onblur="OnAddItemBlur" />
+                    }
+                    @if (_addItemSuggestions.Count > 0)
+                    {
+                        <div class="autocomplete-dropdown">
+                            @for (var i = 0; i < _addItemSuggestions.Count; i++)
+                            {
+                                var s = _addItemSuggestions[i];
+                                var idx = i;
+                                <button class="autocomplete-item @(idx == _addItemHighlight ? "ac-highlighted" : "")"
+                                        @onclick="() => SelectAddItem(s)"
+                                        @onmouseenter="() => _addItemHighlight = idx">
+                                    @s.Name (@s.Code)
+                                </button>
+                            }
+                        </div>
+                    }
+                </div>
+            </div>
+            <div class="add-form-field">
+                <label>Station</label>
+                <div class="add-search-wrap">
+                    @if (_addStationId.HasValue)
+                    {
+                        <div class="selected-tag">
+                            @_addStationName
+                            <button class="btn-close-sm" @onclick="ClearAddStation">&times;</button>
+                        </div>
+                    }
+                    else
+                    {
+                        <input type="text" placeholder="Search station..." @bind="StationSearchText" @bind:event="oninput"
+                               @onkeydown="OnAddStationKeydown" @onblur="OnAddStationBlur" />
+                    }
+                    @if (_addStationSuggestions.Count > 0)
+                    {
+                        <div class="autocomplete-dropdown">
+                            @for (var i = 0; i < _addStationSuggestions.Count; i++)
+                            {
+                                var s = _addStationSuggestions[i];
+                                var idx = i;
+                                <button class="autocomplete-item @(idx == _addStationHighlight ? "ac-highlighted" : "")"
+                                        @onclick="() => SelectAddStation(s)"
+                                        @onmouseenter="() => _addStationHighlight = idx">
+                                    @s.DisplayText
+                                </button>
+                            }
+                        </div>
+                    }
+                </div>
+            </div>
+        </div>
+        <div class="add-form-row add-form-row-narrow">
+            @if (ShowAddQuality)
+            {
+                <div class="add-form-field add-form-field-small">
+                    <label>Quality</label>
+                    <input type="number" step="1" min="0" max="1000" @bind="_addQuality" />
+                </div>
+            }
+            <div class="add-form-field add-form-field-small">
+                <label>Quantity</label>
+                <input type="number" step="any" min="0" @bind="_addQuantity" />
+            </div>
+
+            <div class="add-form-field add-form-field-btn">
+                <button class="btn btn-primary" @onclick="AddItem" disabled="@(_addItemId == null || _isAdding)">
+                    @(_isAdding ? "Adding..." : "Add")
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header-row">
+        <div class="filter-indicators">
+            @if (_searchItemId.HasValue)
+            {
+                <span class="filter-tag">@_searchItemName <button class="btn-close-sm" @onclick="ClearSearch">&times;</button></span>
+            }
+            @if (_filterState.IsActive)
+            {
+                @if (_filterState.CategoryIds.Count > 0)
+                {
+                    <span class="filter-tag">Category filter</span>
+                }
+                @if (_filterState.QualityMin > 0 || _filterState.QualityMax < 1000)
+                {
+                    <span class="filter-tag">Q@(_filterState.QualityMin.ToString("F0"))-@(_filterState.QualityMax.ToString("F0"))</span>
+                }
+                @if (_filterState.ScuMin > 0)
+                {
+                    <span class="filter-tag">Min @(_filterState.ScuMin.ToString("F2"))</span>
+                }
+            }
+        </div>
+        <div class="search-group">
+            <div class="item-search">
+                <input type="text" placeholder="Search items..." @bind="FilterSearchText" @bind:event="oninput"
+                       @onkeydown="OnSearchKeydown" @onblur="OnSearchBlur" />
+                <button class="btn btn-blue btn-icon search-btn" @onclick="ApplySearch" title="Search">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+                </button>
+                @if (_itemSuggestions.Count > 0)
+                {
+                    <div class="autocomplete-dropdown">
+                        @for (var i = 0; i < _itemSuggestions.Count; i++)
+                        {
+                            var s = _itemSuggestions[i];
+                            var idx = i;
+                            <button class="autocomplete-item @(idx == _highlightedIndex ? "ac-highlighted" : "")"
+                                    @onclick="() => SelectSearchItem(s)"
+                                    @onmouseenter="() => _highlightedIndex = idx">
+                                @s.Name (@s.Code)
+                            </button>
+                        }
+                    </div>
+                }
+            </div>
+            <button class="btn btn-secondary btn-icon" @onclick="() => _showFilterOverlay = true" title="Filters">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M3 4h18l-7 8.26V20l-4-2v-5.74Z"/>
+                </svg>
+            </button>
+            @if (_searchItemId.HasValue || _filterState.IsActive)
+            {
+                <button class="btn btn-secondary btn-sm" @onclick="ResetAllFilters">Reset</button>
+            }
+        </div>
+    </div>
+
+    @if (_displayedItems.Count == 0)
+    {
+        <p class="empty-state">No inventory items.</p>
+    }
+    else
+    {
+        <div class="table-wrap">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Item</th>
+                        <th>Category</th>
+                        <th>Station</th>
+                        <th>System</th>
+                        <th>Quality</th>
+                        <th>Qty</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var item in _displayedItems)
+                    {
+                        <tr class="@GetFlashClass(item.Id)">
+                            <td>@item.Item?.Name</td>
+                            <td>@item.Item?.Category?.Name</td>
+                            <td>@item.Station?.Name</td>
+                            <td>@item.Station?.System?.Name</td>
+                            <td>@(item.Quality.HasValue ? item.Quality.Value.ToString("F0") : "-")</td>
+                            <td>@(IsScuCategory(item.Item?.CatId) ? item.Quantity.ToString("F2") + " SCU" : item.Quantity.ToString("F0"))</td>
+                            <td class="actions-cell">
+                                <button class="btn btn-blue btn-sm" @onclick="() => StartEdit(item)">Edit</button>
+                                <button class="btn btn-danger btn-sm" @onclick="() => DeleteItem(item)">Del</button>
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+        <Pagination TotalItems="_totalItems" CurrentPage="_page" PageSize="_pageSize"
+                    CurrentPageChanged="OnPageChanged" PageSizeChanged="OnPageSizeChanged" />
+    }
+</div>
+
+@if (_showEditForm)
+{
+    <div class="modal-overlay" @onclick="CancelEdit" @onkeydown="HandleKeydown" tabindex="0">
+        <div class="modal" @onclick:stopPropagation>
+            <h2>Edit Inventory Item</h2>
+
+            <div class="form-group">
+                <label>Item</label>
+                <select @bind="_editItemId">
+                    @foreach (var i in _allItems)
+                    {
+                        <option value="@i.Id">@i.Name (@i.Code)</option>
+                    }
+                </select>
+            </div>
+
+            <div class="form-group">
+                <label>Station</label>
+                <select @bind="_editStationId">
+                    <option value="">None</option>
+                    @foreach (var s in _allStations)
+                    {
+                        <option value="@s.Id">@s.Name (@s.Code) - @s.SystemName</option>
+                    }
+                </select>
+            </div>
+
+            @if (ShowEditQuality)
+            {
+                <div class="form-group">
+                    <label>Quality</label>
+                    <input type="number" step="1" min="0" max="1000" @bind="_editQuality" />
+                </div>
+            }
+
+            <div class="form-group">
+                <label>Quantity</label>
+                <input type="number" step="any" min="0" @bind="_editQuantity" />
+            </div>
+
+            <div class="form-actions">
+                <button class="btn btn-secondary" @onclick="CancelEdit">Cancel</button>
+                <button class="btn btn-primary" @onclick="SaveEdit" disabled="@_isEditingSave">
+                    @(_isEditingSave ? "Saving..." : "Save")
+                </button>
+            </div>
+        </div>
+    </div>
+}
+
+@if (_showFilterOverlay)
+{
+    <div class="modal-overlay" @onclick="() => _showFilterOverlay = false" @onkeydown="HandleKeydown" tabindex="0">
+        <div class="modal" @onclick:stopPropagation>
+            <div class="modal-header">
+                <h2>Filters</h2>
+                <button class="btn-close" @onclick="() => _showFilterOverlay = false">&times;</button>
+            </div>
+            <FilterPanel FiltersChanged="ApplyFilterPanel" />
+        </div>
+    </div>
+}
+
+@code {
+    private List<PITS.Models.InventoryItem> _displayedItems = new();
+    private Dictionary<int, string> _flashState = new();
+    private List<PITS.Models.InventoryItem> _previousItems = new();
+    private Timer? _flashTimer;
+    private bool _isFirstLoad = true;
+    private int _totalItems;
+    private int _page = 1;
+    private int _pageSize = 20;
+
+    private List<PITS.Models.Item> _allItems = new();
+    private List<StationDisplay> _allStations = new();
+
+    // Add form
+    private string _addItemSearchText = "";
+    private List<PITS.Models.Item> _addItemSuggestions = new();
+    private int _addItemHighlight = -1;
+    private int? _addItemId;
+    private string? _addItemName;
+
+    private string _addStationSearchText = "";
+    private List<StationDisplay> _addStationSuggestions = new();
+    private int _addStationHighlight = -1;
+    private int? _addStationId;
+    private string? _addStationName;
+
+    private float? _addQuality;
+    private decimal _addQuantity;
+
+    private bool _isAdding;
+
+    // Search/filter
+    private string _searchText = "";
+    private int? _searchItemId;
+    private string? _searchItemName;
+    private List<PITS.Models.Item> _itemSuggestions = new();
+    private int _highlightedIndex = -1;
+    private FilterPanel.FilterState _filterState = new() { QualityMax = 1000 };
+    private bool _showFilterOverlay;
+
+    // Edit form
+    private bool _showEditForm;
+    private bool _isEditingSave;
+    private PITS.Models.InventoryItem? _editingItem;
+    private int _editItemId;
+    private int? _editStationId;
+    private float? _editQuality;
+    private decimal _editQuantity;
+
+
+    private class StationDisplay
+    {
+        public int Id { get; set; }
+        public string Name { get; set; } = "";
+        public string Code { get; set; } = "";
+        public string? SystemName { get; set; }
+        public string DisplayText => $"{Name} ({Code}){(SystemName != null ? $" - {SystemName}" : "")}";
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        using var scope = ServiceScopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<Data.AppDbContext>();
+        _allItems = await db.Items.OrderBy(i => i.Name).ToListAsync();
+        _allStations = await db.Stations.Include(s => s.System).OrderBy(s => s.Name)
+            .Select(s => new StationDisplay { Id = s.Id, Name = s.Name, Code = s.Code, SystemName = s.System != null ? s.System.Name : null })
+            .ToListAsync();
+        await LoadInventory();
+        ChangeNotifier.Changed += OnInventoryChanged;
+    }
+
+    private void OnInventoryChanged()
+    {
+        _ = InvokeAsync(async () =>
+        {
+            await LoadInventory();
+            StateHasChanged();
+        });
+    }
+
+    // ====== Add Form - Item Autocomplete ======
+
+    private string ItemSearchText
+    {
+        get => _addItemSearchText;
+        set
+        {
+            _addItemSearchText = value;
+            _ = UpdateAddItemSuggestions();
+        }
+    }
+
+    private async Task UpdateAddItemSuggestions()
+    {
+        var searchText = _addItemSearchText;
+        if (string.IsNullOrWhiteSpace(searchText) || searchText.Length < 2)
+        {
+            _addItemSuggestions.Clear();
+            _addItemHighlight = -1;
+            await InvokeAsync(StateHasChanged);
+            return;
+        }
+        using var scope = ServiceScopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<Data.AppDbContext>();
+        var results = await db.Items
+            .Where(i => EF.Functions.Like(i.Name, $"%{searchText}%"))
+            .OrderBy(i => i.Name)
+            .Take(10)
+            .ToListAsync();
+        if (_addItemSearchText != searchText) return;
+        _addItemSuggestions = results;
+        _addItemHighlight = _addItemSuggestions.Count > 0 ? 0 : -1;
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task OnAddItemKeydown(KeyboardEventArgs e)
+    {
+        if (_addItemSuggestions.Count == 0) return;
+        switch (e.Key)
+        {
+            case "ArrowDown":
+                _addItemHighlight = Math.Min(_addItemHighlight + 1, _addItemSuggestions.Count - 1);
+                break;
+            case "ArrowUp":
+                _addItemHighlight = Math.Max(_addItemHighlight - 1, 0);
+                break;
+            case "Enter":
+                if (_addItemHighlight >= 0 && _addItemHighlight < _addItemSuggestions.Count)
+                    SelectAddItem(_addItemSuggestions[_addItemHighlight]);
+                else if (_addItemSuggestions.Count > 0)
+                    SelectAddItem(_addItemSuggestions[0]);
+                break;
+            case "Escape":
+                _addItemSuggestions.Clear();
+                _addItemHighlight = -1;
+                break;
+        }
+    }
+
+    private async void OnAddItemBlur(FocusEventArgs e)
+    {
+        await Task.Delay(150);
+        if (_addItemHighlight >= 0 && _addItemHighlight < _addItemSuggestions.Count)
+            SelectAddItem(_addItemSuggestions[_addItemHighlight]);
+        _addItemHighlight = -1;
+    }
+
+    private void SelectAddItem(PITS.Models.Item item)
+    {
+        _addItemId = item.Id;
+        _addItemName = item.Name;
+        _addItemSearchText = "";
+        _addItemSuggestions.Clear();
+        _addItemHighlight = -1;
+    }
+
+    private void ClearAddItem()
+    {
+        _addItemId = null;
+        _addItemName = null;
+        _addItemSearchText = "";
+        _addItemSuggestions.Clear();
+        _addItemHighlight = -1;
+    }
+
+    // ====== Add Form - Station Autocomplete ======
+
+    private string StationSearchText
+    {
+        get => _addStationSearchText;
+        set
+        {
+            _addStationSearchText = value;
+            _ = UpdateAddStationSuggestions();
+        }
+    }
+
+    private async Task UpdateAddStationSuggestions()
+    {
+        if (string.IsNullOrWhiteSpace(_addStationSearchText) || _addStationSearchText.Length < 2)
+        {
+            _addStationSuggestions.Clear();
+            _addStationHighlight = -1;
+            return;
+        }
+        _addStationSuggestions = _allStations
+            .Where(s => s.Name.Contains(_addStationSearchText, StringComparison.OrdinalIgnoreCase))
+            .Take(10)
+            .ToList();
+        _addStationHighlight = _addStationSuggestions.Count > 0 ? 0 : -1;
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task OnAddStationKeydown(KeyboardEventArgs e)
+    {
+        if (_addStationSuggestions.Count == 0) return;
+        switch (e.Key)
+        {
+            case "ArrowDown":
+                _addStationHighlight = Math.Min(_addStationHighlight + 1, _addStationSuggestions.Count - 1);
+                break;
+            case "ArrowUp":
+                _addStationHighlight = Math.Max(_addStationHighlight - 1, 0);
+                break;
+            case "Enter":
+                if (_addStationHighlight >= 0 && _addStationHighlight < _addStationSuggestions.Count)
+                    SelectAddStation(_addStationSuggestions[_addStationHighlight]);
+                else if (_addStationSuggestions.Count > 0)
+                    SelectAddStation(_addStationSuggestions[0]);
+                break;
+            case "Escape":
+                _addStationSuggestions.Clear();
+                _addStationHighlight = -1;
+                break;
+        }
+    }
+
+    private async void OnAddStationBlur(FocusEventArgs e)
+    {
+        await Task.Delay(150);
+        if (_addStationHighlight >= 0 && _addStationHighlight < _addStationSuggestions.Count)
+            SelectAddStation(_addStationSuggestions[_addStationHighlight]);
+        _addStationHighlight = -1;
+    }
+
+    private void SelectAddStation(StationDisplay station)
+    {
+        _addStationId = station.Id;
+        _addStationName = station.DisplayText;
+        _addStationSearchText = "";
+        _addStationSuggestions.Clear();
+        _addStationHighlight = -1;
+    }
+
+    private void ClearAddStation()
+    {
+        _addStationId = null;
+        _addStationName = null;
+        _addStationSearchText = "";
+        _addStationSuggestions.Clear();
+        _addStationHighlight = -1;
+    }
+
+    // ====== Add Form - Submit ======
+
+    private async Task AddItem()
+    {
+        if (_addItemId == null) return;
+        _isAdding = true;
+        try
+        {
+            using var scope = ServiceScopeFactory.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<Data.AppDbContext>();
+            var itemCatId = _allItems.FirstOrDefault(i => i.Id == _addItemId.Value)?.CatId;
+
+            await InventoryService.AddItemAsync(db, new PITS.Models.InventoryItem
+            {
+                ItemId = _addItemId.Value,
+                StationId = _addStationId,
+                Quality = ShowAddQuality ? _addQuality : null,
+                Quantity = _addQuantity,
+                IsScu = IsScuCategory(itemCatId)
+            });
+
+            _addItemId = null;
+            _addItemName = null;
+            _addStationId = null;
+            _addStationName = null;
+            _addQuality = null;
+            _addQuantity = 0;
+            _addItemSearchText = "";
+            _addStationSearchText = "";
+
+            if (_page != 1) _page = 1;
+        }
+        finally
+        {
+            _isAdding = false;
+        }
+    }
+
+    // ====== Search / Filter ======
+
+    private string FilterSearchText
+    {
+        get => _searchText;
+        set
+        {
+            _searchText = value;
+            _ = UpdateSearchSuggestions();
+        }
+    }
+
+    private async Task UpdateSearchSuggestions()
+    {
+        var searchText = _searchText;
+        if (string.IsNullOrWhiteSpace(searchText) || searchText.Length < 2)
+        {
+            _itemSuggestions.Clear();
+            _highlightedIndex = -1;
+            await InvokeAsync(StateHasChanged);
+            return;
+        }
+        using var scope = ServiceScopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<Data.AppDbContext>();
+        var results = await db.Items
+            .Where(i => EF.Functions.Like(i.Name, $"%{searchText}%"))
+            .OrderBy(i => i.Name)
+            .Take(10)
+            .ToListAsync();
+        if (_searchText != searchText) return;
+        _itemSuggestions = results;
+        _highlightedIndex = _itemSuggestions.Count > 0 ? 0 : -1;
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task OnSearchKeydown(KeyboardEventArgs e)
+    {
+        if (_itemSuggestions.Count == 0) return;
+        switch (e.Key)
+        {
+            case "ArrowDown":
+                _highlightedIndex = Math.Min(_highlightedIndex + 1, _itemSuggestions.Count - 1);
+                break;
+            case "ArrowUp":
+                _highlightedIndex = Math.Max(_highlightedIndex - 1, 0);
+                break;
+            case "Enter":
+                if (_highlightedIndex >= 0 && _highlightedIndex < _itemSuggestions.Count)
+                    await SelectSearchItem(_itemSuggestions[_highlightedIndex]);
+                else if (_itemSuggestions.Count > 0)
+                    await SelectSearchItem(_itemSuggestions[0]);
+                break;
+            case "Escape":
+                _itemSuggestions.Clear();
+                _highlightedIndex = -1;
+                break;
+        }
+    }
+
+    private async void OnSearchBlur(FocusEventArgs e)
+    {
+        await Task.Delay(150);
+        _highlightedIndex = -1;
+    }
+
+    private async Task ApplySearch()
+    {
+        if (_highlightedIndex >= 0 && _highlightedIndex < _itemSuggestions.Count)
+            await SelectSearchItem(_itemSuggestions[_highlightedIndex]);
+        else if (_itemSuggestions.Count > 0)
+            await SelectSearchItem(_itemSuggestions[0]);
+    }
+
+    private async Task SelectSearchItem(PITS.Models.Item item)
+    {
+        _searchItemId = item.Id;
+        _searchItemName = item.Name;
+        _searchText = "";
+        _itemSuggestions.Clear();
+        _highlightedIndex = -1;
+        _page = 1;
+        await LoadInventory();
+    }
+
+    private async Task ClearSearch()
+    {
+        _searchItemId = null;
+        _searchItemName = null;
+        _page = 1;
+        await LoadInventory();
+    }
+
+    private async Task ApplyFilterPanel(FilterPanel.FilterState state)
+    {
+        _showFilterOverlay = false;
+        _filterState = state;
+        _page = 1;
+        await LoadInventory();
+    }
+
+    private async Task ResetAllFilters()
+    {
+        _searchItemId = null;
+        _searchItemName = null;
+        _searchText = "";
+        _itemSuggestions.Clear();
+        _highlightedIndex = -1;
+        _filterState = new FilterPanel.FilterState { QualityMax = 1000 };
+        _page = 1;
+        await LoadInventory();
+    }
+
+    // ====== Load Inventory ======
+
+    private async Task LoadInventory()
+    {
+        // Snapshot current items for diff
+        var oldMap = _displayedItems.ToDictionary(i => i.Id);
+
+        using var scope = ServiceScopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<Data.AppDbContext>();
+
+        var query = db.InventoryItems
+            .Include(i => i.Item).ThenInclude(i => i!.Category)
+            .Include(i => i.Station).ThenInclude(s => s!.System)
+            .AsQueryable();
+
+        if (_searchItemId.HasValue)
+            query = query.Where(i => i.ItemId == _searchItemId.Value);
+
+        if (_filterState.CategoryIds.Count > 0)
+            query = query.Where(i => i.Item != null && i.Item.CatId != null && _filterState.CategoryIds.Contains(i.Item.CatId.Value));
+
+        if (_filterState.QualityMin > 0)
+            query = query.Where(i => i.Quality >= (float)_filterState.QualityMin);
+
+        if (_filterState.QualityMax < 1000)
+            query = query.Where(i => i.Quality == null || i.Quality <= (float)_filterState.QualityMax);
+
+        if (_filterState.ScuMin > 0)
+            query = query.Where(i => i.IsScu && i.Quantity >= _filterState.ScuMin);
+
+        _totalItems = await query.CountAsync();
+
+        _displayedItems = await query
+            .OrderByDescending(i => i.UpdatedAt)
+            .Skip((_page - 1) * _pageSize)
+            .Take(_pageSize)
+            .ToListAsync();
+
+        if (_isFirstLoad)
+        {
+            _isFirstLoad = false;
+            _previousItems = _displayedItems.ToList();
+            return;
+        }
+
+        // Diff and set flash states
+        var newIds = _displayedItems.Select(i => i.Id).ToHashSet();
+        _flashState.Clear();
+
+        foreach (var item in _displayedItems)
+        {
+            if (!oldMap.TryGetValue(item.Id, out var old))
+                _flashState[item.Id] = "added";
+            else if (old.UpdatedAt != item.UpdatedAt || old.Quantity != item.Quantity)
+                _flashState[item.Id] = "modified";
+        }
+
+        // Keep deleted items temporarily for flash
+        foreach (var old in _previousItems)
+        {
+            if (!newIds.Contains(old.Id) && !_displayedItems.Any(i => i.Id == old.Id))
+            {
+                _flashState[old.Id] = "deleted";
+                _displayedItems.Add(old);
+            }
+        }
+        _previousItems = _displayedItems.Where(i => _flashState.GetValueOrDefault(i.Id) != "deleted").ToList();
+
+        // Clear flashes after animation
+        _flashTimer?.Dispose();
+        _flashTimer = new Timer(state =>
+        {
+            try
+            {
+                _flashState.Clear();
+                _displayedItems = _displayedItems.Where(i => _previousItems.Any(p => p.Id == i.Id)).ToList();
+                _previousItems.Clear();
+                InvokeAsync(StateHasChanged);
+            }
+            catch { }
+        }, null, 600, Timeout.Infinite);
+    }
+
+    private string? GetFlashClass(int id)
+    {
+        if (_flashState.TryGetValue(id, out var state))
+            return state switch { "added" => "flash-added", "modified" => "flash-modified", "deleted" => "flash-deleted", _ => null };
+        return null;
+    }
+
+    private async Task OnPageChanged(int page)
+    {
+        _page = page;
+        await LoadInventory();
+    }
+
+    private async Task OnPageSizeChanged(int size)
+    {
+        _pageSize = size;
+        _page = 1;
+        await LoadInventory();
+    }
+
+    // ====== Edit Form ======
+
+    private void StartEdit(PITS.Models.InventoryItem item)
+    {
+        _editingItem = item;
+        _editItemId = item.ItemId;
+        _editStationId = item.StationId;
+        _editQuality = item.Quality;
+        _editQuantity = item.Quantity;
+        _showEditForm = true;
+    }
+
+    private async Task SaveEdit()
+    {
+        if (_editingItem == null) return;
+        _isEditingSave = true;
+        try
+        {
+            using var scope = ServiceScopeFactory.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<Data.AppDbContext>();
+            var editCatId = _allItems.FirstOrDefault(i => i.Id == _editItemId)?.CatId;
+
+            await InventoryService.UpdateItemAsync(db, _editingItem.Id, new PITS.Models.InventoryItem
+            {
+                ItemId = _editItemId,
+                StationId = _editStationId,
+                Quality = ShowEditQuality ? _editQuality : null,
+                Quantity = _editQuantity,
+                IsScu = IsScuCategory(editCatId)
+            });
+            _showEditForm = false;
+        }
+        finally
+        {
+            _isEditingSave = false;
+        }
+    }
+
+    private void CancelEdit() => _showEditForm = false;
+
+    // ====== Delete ======
+
+    private async Task DeleteItem(PITS.Models.InventoryItem item)
+    {
+        using var scope = ServiceScopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<Data.AppDbContext>();
+        await InventoryService.DeleteItemAsync(db, item.Id);
+    }
+
+    private void HandleKeydown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Escape") { _showEditForm = false; _showFilterOverlay = false; }
+    }
+
+    private static bool IsScuCategory(int? catId) => catId is 2 or 3 or 4 or 6;
+
+    private bool ShowAddQuality =>
+        _addItemId.HasValue && _allItems.FirstOrDefault(i => i.Id == _addItemId.Value)?.HasQuality == true;
+
+    private bool ShowEditQuality =>
+        _allItems.FirstOrDefault(i => i.Id == _editItemId)?.HasQuality == true;
+
+    public void Dispose()
+    {
+        ChangeNotifier.Changed -= OnInventoryChanged;
+        _flashTimer?.Dispose();
+    }
+}
+
+<style>
+    .card-title { font-size: 1rem; margin: 0 0 0.75rem; }
+    .add-form { display: flex; flex-direction: column; gap: 0.75rem; }
+    .add-form-row { display: flex; gap: 0.75rem; flex-wrap: wrap; }
+    .add-form-row-narrow { align-items: flex-end; }
+    .add-form-field { flex: 1; min-width: 180px; }
+    .add-form-field-small { max-width: 120px; }
+    .add-form-field-check { max-width: 100px; display: flex; align-items: flex-end; }
+    .add-form-field-check .checkbox-label { margin-bottom: 0; }
+    .add-form-field-btn { max-width: 120px; }
+    .add-form-field label { display: block; font-size: 0.8rem; color: var(--muted, #94a3b8); margin-bottom: 0.25rem; text-transform: uppercase; letter-spacing: 0.05em; }
+    .add-form-field input[type="number"] { width: 100%; }
+    .add-search-wrap { position: relative; }
+    .add-search-wrap input { width: 100%; }
+    .selected-tag {
+        display: inline-flex; align-items: center; gap: 0.35rem;
+        padding: 0.4rem 0.6rem; border-radius: 6px;
+        background: var(--line, rgba(255,255,255,0.08));
+        font-size: 0.85rem; color: var(--text, #e2e8f0);
+        width: 100%;
+    }
+</style>

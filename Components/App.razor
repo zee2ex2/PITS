@@ -1,0 +1,23 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+    <base href="/"/>
+    <link rel="icon" type="image/x-icon" href="favicon.ico?v=1" />
+    <link rel="icon" type="image/png" href="favicon.png?v=1" />
+    <title>PITS</title>
+    <ResourcePreloader/>
+    <link rel="stylesheet" href="@Assets["app.css"]"/>
+    <link rel="stylesheet" href="@Assets["PITS.styles.css"]"/>
+    <ImportMap/>
+</head>
+
+<body>
+<Routes @rendermode="InteractiveServer"/>
+<ReconnectModal @rendermode="InteractiveServer"/>
+<script src="@Assets["_framework/blazor.web.js"]"></script>
+</body>
+
+</html>

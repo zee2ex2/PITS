@@ -1,0 +1,152 @@
+﻿@inherits LayoutComponentBase
+@using PITS.Plugins
+@inject NavigationManager Navigation
+@inject IJSRuntime JS
+@inject PluginService PluginService
+
+<HeadOutlet />
+
+<div class="app-layout">
+    <aside class="sidebar @(_sidebarCollapsed ? "collapsed" : "")">
+        <div class="sidebar-content">
+            <div class="sidebar-header">
+                <div class="sidebar-header-text">
+                    <div class="sidebar-title">P.I.T.S.</div>
+                    <div class="sidebar-subtitle">@_localUrl</div>
+                    @foreach (var (userInfoType, _) in _sidebarPlugins.Where(p => p.UserInfoType != null))
+                    {
+                        <DynamicComponent Type="userInfoType!" />
+                    }
+                </div>
+                <img class="sidebar-header-icon" src="icon-sm.png" alt="PITS" />
+            </div>
+            <nav class="sidebar-nav">
+                <div class="sidebar-section">Main</div>
+                <a href="/" class="sidebar-link @GetActiveClass("")" @onclick="GoHome">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+                    Inventory
+                </a>
+                <div class="sidebar-section">Settings</div>
+                <a href="/settings" class="sidebar-link @GetActiveClass("settings")" @onclick="GoToSettings">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+                    Settings
+                </a>
+            </nav>
+            <div class="sidebar-footer">
+                <button class="theme-btn" @onclick="ToggleTheme">
+                    @if (_isDark)
+                    {
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+                    }
+                    else
+                    {
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
+                    }
+                    @(_isDark ? "Dark" : "Light")
+                </button>
+                @foreach (var (_, footerType) in _sidebarPlugins.Where(p => p.FooterType != null))
+                {
+                    <DynamicComponent Type="footerType!" />
+                }
+            </div>
+        </div>
+    </aside>
+    <div class="notification-area">
+        <NotificationContainer />
+    </div>
+    <button class="sidebar-toggle @(_sidebarCollapsed ? "collapsed" : "")" @onclick="ToggleSidebar" title="@(_sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar")">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="@(_sidebarCollapsed ? "9 18 15 12 9 6" : "15 18 9 12 15 6")"/>
+        </svg>
+    </button>
+    <div class="main-area">
+        <main class="main-content main-content-wide">
+            @Body
+        </main>
+    </div>
+</div>
+
+<div id="blazor-error-ui" data-nosnippet>
+    An unhandled error has occurred.
+    <a href="." class="reload">Reload</a>
+    <span class="dismiss">🗙</span>
+</div>
+
+@code {
+    private bool _isDark = true;
+    private bool _sidebarCollapsed;
+    private string _localUrl = "Loading...";
+    private List<(Type? UserInfoType, Type? FooterType)> _sidebarPlugins = new();
+
+    protected override void OnInitialized()
+    {
+        _localUrl = GetLocalUrl();
+        LoadSidebarPlugins();
+    }
+
+    private void LoadSidebarPlugins()
+    {
+        _sidebarPlugins.Clear();
+        foreach (var kvp in PluginService.LoadedPlugins)
+        {
+            if (kvp.Value is IHasSidebarContent sidebar)
+            {
+                _sidebarPlugins.Add((sidebar.SidebarUserInfoComponentType, sidebar.SidebarFooterComponentType));
+            }
+        }
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            var theme = await JS.InvokeAsync<string>("eval", "localStorage.getItem('pits-theme')");
+            _isDark = theme != "light";
+            await ApplyTheme();
+        }
+    }
+
+    private void ToggleSidebar()
+    {
+        _sidebarCollapsed = !_sidebarCollapsed;
+    }
+
+    private async Task ToggleTheme()
+    {
+        _isDark = !_isDark;
+        await ApplyTheme();
+    }
+
+    private async Task ApplyTheme()
+    {
+        var theme = _isDark ? "dark" : "light";
+        await JS.InvokeVoidAsync("eval", $"document.documentElement.setAttribute('data-theme', '{theme}'); localStorage.setItem('pits-theme', '{theme}')");
+    }
+
+    private string GetActiveClass(string path)
+    {
+        var current = Navigation.Uri.TrimEnd('/');
+        var target = Navigation.BaseUri.TrimEnd('/') + "/" + path.TrimEnd('/');
+        return current == target.TrimEnd('/') ? "active" : "";
+    }
+
+    private void GoHome() => Navigation.NavigateTo("/");
+    private void GoToSettings() => Navigation.NavigateTo("/settings");
+
+    private static string GetLocalUrl()
+    {
+        try
+        {
+            var ip = System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces()
+                .Where(ni => ni.OperationalStatus == System.Net.NetworkInformation.OperationalStatus.Up)
+                .SelectMany(ni => ni.GetIPProperties().UnicastAddresses)
+                .FirstOrDefault(ua => ua.Address.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork
+                    && !System.Net.IPAddress.IsLoopback(ua.Address))
+                ?.Address;
+            if (ip != null)
+                return $"http://{ip}:5050";
+        }
+        catch { }
+        return "http://localhost:5050";
+    }
+}

@@ -1,0 +1,91 @@
+@if (TotalItems > PageSize)
+{
+    var totalPages = (TotalItems + PageSize - 1) / PageSize;
+
+    <div class="pagination">
+        <div class="pagination-info">@((CurrentPage - 1) * PageSize + 1)–@Math.Min(CurrentPage * PageSize, TotalItems) of @TotalItems</div>
+        <div class="pagination-buttons">
+            <button class="page-btn" disabled="@(CurrentPage <= 1)" @onclick="() => GoToPage(CurrentPage - 1)">Prev</button>
+            @{
+                var startPage = Math.Max(1, CurrentPage - 2);
+                var endPage = Math.Min(totalPages, CurrentPage + 2);
+                if (startPage > 1)
+                {
+                    <button class="page-btn" @onclick="() => GoToPage(1)">1</button>
+                    if (startPage > 2)
+                    {
+                        <span class="page-ellipsis">...</span>
+                    }
+                }
+                for (var pi = startPage; pi <= endPage; pi++)
+                {
+                    var p = pi;
+                    <button class="page-btn @(p == CurrentPage ? "page-active" : "")" @onclick="() => GoToPage(p)">@p</button>
+                }
+                if (endPage < totalPages)
+                {
+                    if (endPage < totalPages - 1)
+                    {
+                        <span class="page-ellipsis">...</span>
+                    }
+                    var plast = totalPages;
+                    <button class="page-btn" @onclick="() => GoToPage(plast)">@totalPages</button>
+                }
+            }
+            <button class="page-btn" disabled="@(CurrentPage >= totalPages)" @onclick="() => GoToPage(CurrentPage + 1)">Next</button>
+        </div>
+        <select class="page-size-select" @onchange="OnPageSizeSelect">
+            <option value="20" selected="@(PageSize == 20)">20</option>
+            <option value="50" selected="@(PageSize == 50)">50</option>
+            <option value="100" selected="@(PageSize == 100)">100</option>
+        </select>
+    </div>
+}
+
+@code {
+    [Parameter] public int TotalItems { get; set; }
+    [Parameter] public int CurrentPage { get; set; } = 1;
+    [Parameter] public int PageSize { get; set; } = 20;
+    [Parameter] public EventCallback<int> CurrentPageChanged { get; set; }
+    [Parameter] public EventCallback<int> PageSizeChanged { get; set; }
+
+    private void GoToPage(int page)
+    {
+        if (page < 1 || page > (TotalItems + PageSize - 1) / PageSize)
+            return;
+        CurrentPageChanged.InvokeAsync(page);
+    }
+
+    private void OnPageSizeSelect(ChangeEventArgs e)
+    {
+        if (int.TryParse(e.Value?.ToString(), out var size) && size != PageSize)
+        {
+            PageSizeChanged.InvokeAsync(size);
+            CurrentPageChanged.InvokeAsync(1);
+        }
+    }
+}
+
+<style>
+    .pagination {
+        display: flex; justify-content: space-between; align-items: center;
+        padding: 0.75rem 0; margin-top: 0.5rem;
+        border-top: 1px solid var(--line, rgba(255,255,255,0.08));
+        gap: 1rem; flex-wrap: wrap;
+    }
+    .pagination-info { font-size: 0.8rem; color: var(--muted, #94a3b8); white-space: nowrap; }
+    .pagination-buttons { display: flex; gap: 0.2rem; align-items: center; flex-wrap: wrap; }
+    .page-btn {
+        padding: 0.3rem 0.55rem; border-radius: 4px; border: 1px solid var(--line, rgba(255,255,255,0.08));
+        background: transparent; color: var(--text, #e2e8f0); cursor: pointer; font-size: 0.8rem;
+        transition: all 0.15s; min-width: 32px; text-align: center;
+    }
+    .page-btn:hover:not(:disabled) { border-color: var(--accent, #a92a28); }
+    .page-btn:disabled { opacity: 0.4; cursor: default; }
+    .page-active { background: var(--accent, #a92a28); color: #fff; border-color: var(--accent, #a92a28); }
+    .page-ellipsis { color: var(--muted, #94a3b8); padding: 0 0.15rem; font-size: 0.8rem; }
+    .page-size-select {
+        padding: 0.3rem 0.5rem; border-radius: 4px; border: 1px solid var(--line, rgba(255,255,255,0.08));
+        background: var(--panel, #1b1b1b); color: var(--text, #e2e8f0); font-size: 0.8rem;
+    }
+</style>

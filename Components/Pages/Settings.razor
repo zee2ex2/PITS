@@ -1,0 +1,727 @@
+@page "/settings"
+@using Microsoft.AspNetCore.Components
+@using Microsoft.EntityFrameworkCore
+@using PITS.Plugins
+@inject IServiceScopeFactory ServiceScopeFactory
+@inject IConfiguration Configuration
+@inject NavigationManager Navigation
+@inject IJSRuntime JSRuntime
+
+<PageTitle>Settings - PITS</PageTitle>
+
+<h1 class="page-title">Settings</h1>
+
+<div class="tabs">
+    <button class="tab @(_activeTab == "plugins" ? "tab-active" : "")" @onclick='() => SwitchTab("plugins")'>Plugins</button>
+    <button class="tab @(_activeTab == "database" ? "tab-active" : "")" @onclick='() => SwitchTab("database")'>Database</button>
+    <button class="tab @(_activeTab == "data" ? "tab-active" : "")" @onclick='() => SwitchTab("data")'>Data</button>
+</div>
+
+@if (_activeTab == "plugins")
+{
+    <div class="card">
+        <div class="section-header">
+            <h2>Installed Plugins</h2>
+            <button class="btn btn-primary" @onclick="OpenPluginFileBrowser">Install Plugin</button>
+        </div>
+        @if (_plugins.Count == 0)
+        {
+            <p class="empty-state">No plugins installed.</p>
+        }
+        else
+        {
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Name</th>
+                            <th>Version</th>
+                            <th>Type</th>
+                            <th>Enabled</th>
+                            <th>Loaded</th>
+                            <th>Installed</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var plugin in _plugins)
+                        {
+                            var isLoaded = _loadedInstances.TryGetValue(plugin.Id, out var loadedPlugin);
+                            var displayName = isLoaded ? loadedPlugin!.Name : plugin.Name;
+                            var displayVersion = isLoaded ? loadedPlugin!.Version : plugin.Version;
+                            <tr>
+                                <td>@displayName</td>
+                                <td>@displayVersion</td>
+                                <td>@(plugin.AssemblyPath.EndsWith(".csx", StringComparison.OrdinalIgnoreCase) ? "Script" : "Assembly")</td>
+                                <td>
+                                    <label class="toggle">
+                                        <input type="checkbox" checked="@plugin.IsEnabled"
+                                               @onchange="(e) => TogglePlugin(plugin, (bool)e.Value!)" />
+                                        <span class="toggle-slider"></span>
+                                    </label>
+                                </td>
+                                <td>
+                                    @if (_loadedIds.Contains(plugin.Id))
+                                    {
+                                        <span class="status-dot status-ok"></span>
+                                    }
+                                    else
+                                    {
+                                        <span class="status-dot status-off"></span>
+                                    }
+                                </td>
+                                 <td>@plugin.InstalledAt.ToLocalTime().ToString("g")</td>
+                                 <td class="actions-cell">
+                                     @if (_loadedInstances.TryGetValue(plugin.Id, out var instance) && instance is IHasPluginSettings)
+                                     {
+                                         <button class="btn btn-blue btn-sm" @onclick="() => ShowConfigure(instance)">Configure</button>
+                                     }
+                                     <button class="btn btn-danger btn-sm" @onclick="() => UninstallPlugin(plugin)">Uninstall</button>
+                                 </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+    </div>
+}
+
+@if (_activeTab == "database")
+{
+    <div class="card db-info">
+        <h2>Current Database</h2>
+        <div class="schema-version">Schema: @_schemaVersion</div>
+        <div class="db-path-row">
+            <span class="path-value">@_dbPath</span>
+            <button class="btn btn-blue btn-sm" @onclick="OpenFileBrowser">Choose DB File</button>
+        </div>
+    </div>
+
+    <div class="actions-grid">
+        <div class="card action-card">
+            <h3>Reset Database</h3>
+            <p>Clears all inventory items, plugins, and reference data. Re-seeds from seed data.</p>
+            <button class="btn btn-danger" @onclick="ResetDb" disabled="@_isResetting">
+                @(_isResetting ? "Resetting..." : "Reset Database")
+            </button>
+        </div>
+        <div class="card action-card">
+            <h3>Create New Database</h3>
+            <p>Creates a fresh database with seeded reference data in a new location.</p>
+            <button class="btn btn-primary" @onclick="CreateNewDb" disabled="@_isCreating">
+                @(_isCreating ? "Creating..." : "Create New Database")
+            </button>
+        </div>
+    </div>
+}
+
+@if (_showFileBrowser)
+{
+    <div class="modal-overlay" @onclick="CloseFileBrowser" @onkeydown="HandleKeydown" tabindex="0">
+        <div class="modal modal-wide" @onclick:stopPropagation>
+            <div class="modal-header">
+                <h2>@(_browseForPlugin ? "Select Plugin File" : "Select Database File")</h2>
+                <button class="btn-close" @onclick="CloseFileBrowser">&times;</button>
+            </div>
+            <div class="browser-path">
+                <span class="path-value browser-current">@_browsePath</span>
+            </div>
+            <div class="browser-entries">
+                @if (_browseEntries.Count == 0)
+                {
+                    <p class="empty-state">No items found in this directory.</p>
+                }
+                else
+                {
+                    @if (_browseParent != null)
+                    {
+                        <button class="browser-entry browser-up" @onclick='() => NavigateTo(_browseParent)'>
+                            <span class="entry-icon">📁</span> ..
+                        </button>
+                    }
+                    @foreach (var entry in _browseEntries)
+                    {
+                        <button class="browser-entry @(entry.IsDirectory ? "" : "browser-file")"
+                                @onclick='() => SelectEntry(entry.Path, entry.IsDirectory)'>
+                            <span class="entry-icon">@(entry.IsDirectory ? "📁" : "🗄️")</span>
+                            <span class="entry-name">@entry.Name</span>
+                            @if (!entry.IsDirectory)
+                            {
+                                <span class="entry-select">Select</span>
+                            }
+                        </button>
+                    }
+                }
+            </div>
+            <div class="form-actions">
+                <button class="btn btn-secondary" @onclick="CloseFileBrowser">Cancel</button>
+                <span class="browser-hint">
+                    @(_browseForPlugin
+                        ? "Navigate to a .zip, .dll, or .csx file and click Select"
+                        : "Navigate to a .db file and click Select")
+                </span>
+            </div>
+        </div>
+    </div>
+}
+
+@if (_showConfigure)
+{
+    <div class="modal-overlay" @onclick="CloseConfigure" @onkeydown="HandleKeydown" tabindex="0">
+        <div class="modal" @onclick:stopPropagation>
+            <div class="modal-header">
+                <h2>Configure @_configuringPlugin?.Name</h2>
+                <button class="btn-close" @onclick="CloseConfigure">&times;</button>
+            </div>
+            @if (_configuringPlugin is IHasPluginSettings settings)
+            {
+                <DynamicComponent Type="settings.SettingsComponentType" />
+            }
+        </div>
+    </div>
+}
+
+@code {
+    private string _activeTab = "plugins";
+    private string _dataTab = "items";
+    private Dictionary<string, string> _tabs = new()
+    {
+        ["items"] = "Items",
+        ["categories"] = "Categories",
+        ["stations"] = "Stations",
+        ["systems"] = "Systems"
+    };
+
+    // Database
+    private string _dbPath = "";
+    private string _schemaVersion = "";
+    private bool _isResetting;
+    private bool _isCreating;
+    private bool _showFileBrowser;
+    private bool _browseForPlugin;
+    private string _browsePath = "";
+    private string? _browseParent;
+    private List<FileEntry> _browseEntries = new();
+
+    // Plugins
+    private List<PITS.Models.Plugin> _plugins = new();
+    private HashSet<int> _loadedIds = new();
+    private Dictionary<int, IPlugin> _loadedInstances = new();
+    private bool _showConfigure;
+    private IPlugin? _configuringPlugin;
+
+    // Data (items, categories, stations, systems)
+    private int _dataPage = 1;
+    private int _dataPageSize = 20;
+    private List<PITS.Models.Item> _allItems = new();
+    private List<PITS.Models.Item> _displayedDataItems = new();
+    private int _totalDataItems;
+    private List<PITS.Models.ItemCategory> _allCategories = new();
+    private List<PITS.Models.ItemCategory> _displayedCategories = new();
+    private int _totalCategories;
+    private List<PITS.Models.Station> _allStations = new();
+    private List<PITS.Models.Station> _displayedStations = new();
+    private int _totalStations;
+    private List<PITS.Models.StarSystem> _allSystems = new();
+    private List<PITS.Models.StarSystem> _displayedSystems = new();
+    private int _totalSystems;
+
+    private bool _showForm;
+    private bool _isSaving;
+    private PITS.Models.Item? _editingDataItem;
+    private PITS.Models.ItemCategory? _editingCategory;
+    private PITS.Models.Station? _editingStation;
+    private PITS.Models.StarSystem? _editingSystem;
+    private string _formName = "";
+    private string _formCode = "";
+    private int? _formCatId;
+    private int? _formSystemId;
+    private int _formParentId;
+    private bool _formHasQuality;
+
+    protected override async Task OnInitializedAsync()
+    {
+        var dataDir = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "PITS", "data");
+        var configPath = Path.Combine(dataDir, "config.json");
+        _dbPath = Path.Combine(dataDir, "pits.db");
+        if (File.Exists(configPath))
+        {
+            try
+            {
+                var cfg = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, string>>(await File.ReadAllTextAsync(configPath));
+                if (cfg != null && cfg.TryGetValue("dbPath", out var customPath) && !string.IsNullOrEmpty(customPath) && File.Exists(customPath))
+                    _dbPath = customPath;
+            }
+            catch { }
+        }
+        await LoadPluginData();
+    }
+
+    private async Task SwitchTab(string tab)
+    {
+        _activeTab = tab;
+        _showForm = false;
+        if (tab == "plugins") await LoadPluginData();
+        if (tab == "data") await LoadDataTab();
+    }
+
+    // ====== Plugin Management ======
+
+    private async Task LoadPluginData()
+    {
+        using var scope = ServiceScopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<Data.AppDbContext>();
+        _plugins = await db.Plugins.OrderBy(p => p.Name).ToListAsync();
+        var ps = scope.ServiceProvider.GetRequiredService<Plugins.PluginService>();
+        _loadedIds = ps.LoadedPlugins.Keys.ToHashSet();
+        _loadedInstances = ps.LoadedPlugins.ToDictionary(kvp => kvp.Key, kvp => kvp.Value);
+    }
+
+    private void ShowConfigure(IPlugin plugin)
+    {
+        _configuringPlugin = plugin;
+        _showConfigure = true;
+    }
+
+    private void CloseConfigure()
+    {
+        _showConfigure = false;
+        _configuringPlugin = null;
+    }
+
+    private void OpenPluginFileBrowser()
+    {
+        _browseForPlugin = true;
+        _browsePath = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        RefreshBrowser();
+        _showFileBrowser = true;
+    }
+
+    private async Task TogglePlugin(PITS.Models.Plugin plugin, bool enabled)
+    {
+        var scope = ServiceScopeFactory.CreateScope();
+        var ps = scope.ServiceProvider.GetRequiredService<Plugins.PluginService>();
+        await ps.TogglePluginAsync(plugin.Id, enabled);
+        await LoadPluginData();
+    }
+
+    private async Task UninstallPlugin(PITS.Models.Plugin plugin)
+    {
+        var scope = ServiceScopeFactory.CreateScope();
+        var ps = scope.ServiceProvider.GetRequiredService<Plugins.PluginService>();
+        await ps.UninstallPluginAsync(plugin.Id);
+        await LoadPluginData();
+    }
+
+    // ====== Database Management ======
+
+    private async Task LoadSchemaVersion()
+    {
+        try
+        {
+            using var scope = ServiceScopeFactory.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<Data.AppDbContext>();
+            var info = await db.SchemaInfo.OrderBy(s => s.Id).FirstOrDefaultAsync();
+            _schemaVersion = info?.Version ?? "unknown";
+        }
+        catch
+        {
+            _schemaVersion = "unknown";
+        }
+    }
+
+    private async Task ResetDb()
+    {
+        if (!await JSRuntime.InvokeAsync<bool>("confirm",
+            "This will DELETE all inventory items, plugins, and reference data. Reference data will be re-seeded. Continue?"))
+            return;
+
+        _isResetting = true;
+        try
+        {
+            using var scope = ServiceScopeFactory.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<Data.AppDbContext>();
+            var seedPath = Path.Combine(AppContext.BaseDirectory, "seed_data.json");
+            if (!File.Exists(seedPath))
+                seedPath = Path.Combine(Directory.GetCurrentDirectory(), "..", "ShoWER", "seed_data.json");
+            await Data.Seed.SeedData.ResetAsync(db, seedPath);
+        }
+        finally
+        {
+            _isResetting = false;
+        }
+    }
+
+    private async Task CreateNewDb()
+    {
+        if (!await JSRuntime.InvokeAsync<bool>("confirm",
+            "This will create a new empty database with seeded reference data. The current database will remain."))
+            return;
+
+        _isCreating = true;
+        try
+        {
+            var timestamp = DateTime.Now.ToString("yyyyMMdd-HHmmss");
+            var dataDir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "PITS", "data");
+            var newDbPath = Path.Combine(dataDir, $"pits-{timestamp}.db");
+
+            var optionsBuilder = new DbContextOptionsBuilder<Data.AppDbContext>();
+            optionsBuilder.UseSqlite($"Data Source={newDbPath}");
+            using var db = new Data.AppDbContext(optionsBuilder.Options);
+            await db.Database.EnsureCreatedAsync();
+
+            if (!await db.SchemaInfo.AnyAsync())
+            {
+                db.SchemaInfo.Add(new PITS.Models.SchemaInfo { Version = "v1", CreatedAt = DateTime.UtcNow });
+                await db.SaveChangesAsync();
+            }
+
+            var seedPath = Path.Combine(AppContext.BaseDirectory, "seed_data.json");
+            if (!File.Exists(seedPath))
+                seedPath = Path.Combine(Directory.GetCurrentDirectory(), "..", "ShoWER", "seed_data.json");
+            await Data.Seed.SeedData.InitializeAsync(db, seedPath);
+
+            _dbPath = newDbPath;
+            _schemaVersion = "v1";
+        }
+        finally
+        {
+            _isCreating = false;
+        }
+    }
+
+    // ====== File Browser ======
+
+    private void OpenFileBrowser()
+    {
+        _browseForPlugin = false;
+        _browsePath = Path.GetDirectoryName(_dbPath) ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        RefreshBrowser();
+        _showFileBrowser = true;
+    }
+
+    private void CloseFileBrowser()
+    {
+        _showFileBrowser = false;
+        _browseForPlugin = false;
+    }
+
+    private void RefreshBrowser()
+    {
+        try
+        {
+            _browseParent = Directory.GetParent(_browsePath)?.FullName;
+
+            var dirs = Directory.GetDirectories(_browsePath)
+                .Select(d => new FileEntry { Name = Path.GetFileName(d), Path = d, IsDirectory = true })
+                .OrderBy(e => e.Name);
+
+            var filter = _browseForPlugin ? "*.*" : "*.db";
+            IEnumerable<FileEntry> files;
+            if (_browseForPlugin)
+            {
+                var patterns = new[] { "*.zip", "*.dll", "*.csx" };
+                files = patterns.SelectMany(p => Directory.GetFiles(_browsePath, p))
+                    .Select(f => new FileEntry { Name = Path.GetFileName(f), Path = f, IsDirectory = false })
+                    .OrderBy(e => e.Name);
+            }
+            else
+            {
+                files = Directory.GetFiles(_browsePath, "*.db")
+                    .Select(f => new FileEntry { Name = Path.GetFileName(f), Path = f, IsDirectory = false })
+                    .OrderBy(e => e.Name);
+            }
+
+            _browseEntries = dirs.Concat(files).ToList();
+        }
+        catch
+        {
+            _browseEntries = new();
+            _browseParent = null;
+        }
+    }
+
+    private void NavigateTo(string path)
+    {
+        _browsePath = path;
+        RefreshBrowser();
+    }
+
+    private async Task SelectEntry(string path, bool isDirectory)
+    {
+        if (isDirectory)
+        {
+            NavigateTo(path);
+            return;
+        }
+
+        if (_browseForPlugin)
+        {
+            _browseForPlugin = false;
+            _showFileBrowser = false;
+            try
+            {
+                var ps = ServiceScopeFactory.CreateScope().ServiceProvider.GetRequiredService<Plugins.PluginService>();
+                await ps.InstallFromPathAsync(path);
+
+                using var scope = ServiceScopeFactory.CreateScope();
+                var db = scope.ServiceProvider.GetRequiredService<Data.AppDbContext>();
+                var pluginRecord = await db.Plugins
+                    .OrderByDescending(p => p.InstalledAt)
+                    .FirstOrDefaultAsync();
+                if (pluginRecord != null)
+                    await ps.TogglePluginAsync(pluginRecord.Id, true);
+
+                await LoadPluginData();
+            }
+            catch (Exception ex)
+            {
+                await JSRuntime.InvokeVoidAsync("alert", $"Install failed: {ex.Message}");
+            }
+            return;
+        }
+
+        if (!await JSRuntime.InvokeAsync<bool>("confirm",
+            $"Use this database file?\n\n{path}\n\nThe application must be restarted for the change to take effect."))
+            return;
+
+        try
+        {
+            var dataDir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "PITS", "data");
+            var configPath = Path.Combine(dataDir, "config.json");
+            var cfg = new Dictionary<string, string> { { "dbPath", path } };
+            await File.WriteAllTextAsync(configPath, System.Text.Json.JsonSerializer.Serialize(cfg));
+            _dbPath = path;
+            _showFileBrowser = false;
+        }
+        catch (Exception ex)
+        {
+            await JSRuntime.InvokeVoidAsync("alert", $"Error saving database path: {ex.Message}");
+        }
+    }
+
+    private class FileEntry
+    {
+        public string Name { get; set; } = "";
+        public string Path { get; set; } = "";
+        public bool IsDirectory { get; set; }
+    }
+
+    // ====== Data Management ======
+
+    private async Task LoadDataTab()
+    {
+        _dataPage = 1;
+        using var scope = ServiceScopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<Data.AppDbContext>();
+
+        _allItems = await db.Items.Include(i => i.Category).OrderBy(i => i.Id).ToListAsync();
+        _totalDataItems = _allItems.Count;
+        _allCategories = await db.ItemCategories.OrderBy(c => c.Id).ToListAsync();
+        _totalCategories = _allCategories.Count;
+        _allStations = await db.Stations.Include(s => s.System).OrderBy(s => s.Id).ToListAsync();
+        _totalStations = _allStations.Count;
+        _allSystems = await db.Systems.OrderBy(s => s.Id).ToListAsync();
+        _totalSystems = _allSystems.Count;
+        SliceDataPage();
+    }
+
+    private void SliceDataPage()
+    {
+        _displayedDataItems = _allItems.Skip((_dataPage - 1) * _dataPageSize).Take(_dataPageSize).ToList();
+        _displayedCategories = _allCategories.Skip((_dataPage - 1) * _dataPageSize).Take(_dataPageSize).ToList();
+        _displayedStations = _allStations.Skip((_dataPage - 1) * _dataPageSize).Take(_dataPageSize).ToList();
+        _displayedSystems = _allSystems.Skip((_dataPage - 1) * _dataPageSize).Take(_dataPageSize).ToList();
+    }
+
+    private void SwitchDataTab(string tab)
+    {
+        _dataTab = tab;
+        _dataPage = 1;
+        _showForm = false;
+        SliceDataPage();
+    }
+
+    private void OnDataPageChanged(int page)
+    {
+        _dataPage = page;
+        SliceDataPage();
+        StateHasChanged();
+    }
+
+    private void OnDataPageSizeChanged(int size)
+    {
+        _dataPageSize = size;
+        _dataPage = 1;
+        SliceDataPage();
+        StateHasChanged();
+    }
+
+    private void StartAdd()
+    {
+        _editingDataItem = null;
+        _editingCategory = null;
+        _editingStation = null;
+        _editingSystem = null;
+        _formName = "";
+        _formCode = "";
+        _formCatId = null;
+        _formSystemId = null;
+        _formParentId = 0;
+        _formHasQuality = false;
+        _showForm = true;
+    }
+
+    private void StartEditItem(PITS.Models.Item item)
+    {
+        _editingDataItem = item;
+        _editingCategory = null; _editingStation = null; _editingSystem = null;
+        _formName = item.Name; _formCode = item.Code; _formCatId = item.CatId; _formHasQuality = item.HasQuality;
+        _showForm = true;
+    }
+
+    private void StartEditCategory(PITS.Models.ItemCategory cat)
+    {
+        _editingCategory = cat;
+        _editingDataItem = null; _editingStation = null; _editingSystem = null;
+        _formName = cat.Name; _formParentId = cat.ParentId;
+        _showForm = true;
+    }
+
+    private void StartEditStation(PITS.Models.Station station)
+    {
+        _editingStation = station;
+        _editingDataItem = null; _editingCategory = null; _editingSystem = null;
+        _formName = station.Name; _formCode = station.Code; _formSystemId = station.SystemId;
+        _showForm = true;
+    }
+
+    private void StartEditSystem(PITS.Models.StarSystem system)
+    {
+        _editingSystem = system;
+        _editingDataItem = null; _editingCategory = null; _editingStation = null;
+        _formName = system.Name; _formCode = system.Code;
+        _showForm = true;
+    }
+
+    private async Task SaveEntity()
+    {
+        _isSaving = true;
+        try
+        {
+            using var scope = ServiceScopeFactory.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<Data.AppDbContext>();
+
+            if (_dataTab == "items")
+            {
+                if (_editingDataItem != null)
+                {
+                    var existing = await db.Items.FindAsync(_editingDataItem.Id);
+                    if (existing != null)
+                    {
+                        existing.Name = _formName; existing.Code = _formCode;
+                        existing.CatId = _formCatId; existing.HasQuality = _formHasQuality;
+                    }
+                }
+                else
+                {
+                    db.Items.Add(new PITS.Models.Item { Name = _formName, Code = _formCode, CatId = _formCatId, HasQuality = _formHasQuality });
+                }
+            }
+            else if (_dataTab == "categories")
+            {
+                if (_editingCategory != null)
+                {
+                    var existing = await db.ItemCategories.FindAsync(_editingCategory.Id);
+                    if (existing != null) { existing.Name = _formName; existing.ParentId = _formParentId; }
+                }
+                else
+                {
+                    db.ItemCategories.Add(new PITS.Models.ItemCategory { Name = _formName, ParentId = _formParentId });
+                }
+            }
+            else if (_dataTab == "stations")
+            {
+                if (_editingStation != null)
+                {
+                    var existing = await db.Stations.FindAsync(_editingStation.Id);
+                    if (existing != null) { existing.Name = _formName; existing.Code = _formCode; existing.SystemId = _formSystemId ?? 0; }
+                }
+                else
+                {
+                    db.Stations.Add(new PITS.Models.Station { Name = _formName, Code = _formCode, SystemId = _formSystemId ?? 0 });
+                }
+            }
+            else if (_dataTab == "systems")
+            {
+                if (_editingSystem != null)
+                {
+                    var existing = await db.Systems.FindAsync(_editingSystem.Id);
+                    if (existing != null) { existing.Name = _formName; existing.Code = _formCode; }
+                }
+                else
+                {
+                    db.Systems.Add(new PITS.Models.StarSystem { Name = _formName, Code = _formCode });
+                }
+            }
+
+            await db.SaveChangesAsync();
+            _showForm = false;
+            await LoadDataTab();
+        }
+        finally
+        {
+            _isSaving = false;
+        }
+    }
+
+    private async Task DeleteEntity(object entity)
+    {
+        var name = entity switch
+        {
+            PITS.Models.Item i => i.Name,
+            PITS.Models.ItemCategory c => c.Name,
+            PITS.Models.Station s => s.Name,
+            PITS.Models.StarSystem sys => sys.Name,
+            _ => "this item"
+        };
+
+        if (!await JSRuntime.InvokeAsync<bool>("confirm", $"Delete {name}?")) return;
+
+        using var scope = ServiceScopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<Data.AppDbContext>();
+
+        switch (entity)
+        {
+            case PITS.Models.Item i:
+                var item = await db.Items.FindAsync(i.Id);
+                if (item != null) db.Items.Remove(item);
+                break;
+            case PITS.Models.ItemCategory c:
+                var cat = await db.ItemCategories.FindAsync(c.Id);
+                if (cat != null) db.ItemCategories.Remove(cat);
+                break;
+            case PITS.Models.Station s:
+                var station = await db.Stations.FindAsync(s.Id);
+                if (station != null) db.Stations.Remove(station);
+                break;
+            case PITS.Models.StarSystem sys:
+                var system = await db.Systems.FindAsync(sys.Id);
+                if (system != null) db.Systems.Remove(system);
+                break;
+        }
+
+        await db.SaveChangesAsync();
+        await LoadDataTab();
+    }
+
+    private void CancelForm() => _showForm = false;
+    private void HandleKeydown(KeyboardEventArgs e) { if (e.Key == "Escape") { _showForm = false; _showFileBrowser = false; } }
+}
