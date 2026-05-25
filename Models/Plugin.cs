@@ -30,4 +30,8 @@ public class Plugin
 
     [Column("installed_at")]
     public DateTime InstalledAt { get; set; } = DateTime.UtcNow;
+
+    [Column("repo_url")]
+    [MaxLength(500)]
+    public string? RepoUrl { get; set; }
 }

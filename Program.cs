@@ -49,6 +49,11 @@ builder.Services.AddSingleton<InventoryChangeNotifier>();
 builder.Services.AddSingleton<NotificationService>();
 builder.Services.AddScoped<SessionNotificationStore>();
 builder.Services.AddScoped<InventoryService>();
+builder.Services.AddHttpClient<UpdateService>(client =>
+{
+    client.DefaultRequestHeaders.UserAgent.ParseAdd("PITS/0.1.0");
+    client.Timeout = TimeSpan.FromSeconds(15);
+});
 
 builder.WebHost.UseKestrel(options =>
 {
@@ -61,6 +66,15 @@ using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
     await db.Database.EnsureCreatedAsync();
+
+    try
+    {
+        await db.Database.ExecuteSqlRawAsync("ALTER TABLE plugins ADD COLUMN repo_url TEXT NULL");
+    }
+    catch
+    {
+        // Column already exists, ignore
+    }
 
     if (!await db.SchemaInfo.AnyAsync())
     {

@@ -79,7 +79,6 @@ public static class SeedData
     public static async Task ResetAsync(AppDbContext db, string seedFilePath)
     {
         db.InventoryItems.RemoveRange(db.InventoryItems);
-        db.Plugins.RemoveRange(db.Plugins);
         db.Items.RemoveRange(db.Items);
         db.ItemCategories.RemoveRange(db.ItemCategories);
         db.Stations.RemoveRange(db.Stations);

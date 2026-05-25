@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.IO.Compression;
 using System.Reflection;
+using System.Runtime.Loader;
 using Microsoft.CodeAnalysis.CSharp.Scripting;
 using Microsoft.CodeAnalysis.Scripting;
 using Microsoft.EntityFrameworkCore;
@@ -23,8 +24,29 @@ public class PluginService
     {
         _scopeFactory = scopeFactory;
         _logger = logger;
-        _pluginsRoot = Path.Combine(AppContext.BaseDirectory, "plugins");
+        _pluginsRoot = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "PITS", "plugins");
         Directory.CreateDirectory(_pluginsRoot);
+        AssemblyLoadContext.Default.Resolving += OnAssemblyResolve;
+    }
+
+    private Assembly? OnAssemblyResolve(AssemblyLoadContext context, AssemblyName name)
+    {
+        var pluginsDir = new DirectoryInfo(_pluginsRoot);
+        if (!pluginsDir.Exists) return null;
+
+        foreach (var pluginDir in pluginsDir.GetDirectories())
+        {
+            var asmPath = Path.Combine(pluginDir.FullName, name.Name + ".dll");
+            if (File.Exists(asmPath))
+            {
+                _logger.LogDebug("Resolved {Assembly} from {Path}", name.Name, asmPath);
+                return context.LoadFromAssemblyPath(asmPath);
+            }
+        }
+
+        return null;
     }
 
     public async Task LoadAllPluginsAsync()
@@ -340,6 +362,157 @@ public class PluginService
         }
 
         return true;
+    }
+
+    public async Task UpdatePluginRecordAsync(int pluginId, Stream newAssemblyStream, string fileName)
+    {
+        var ms = new MemoryStream();
+        await newAssemblyStream.CopyToAsync(ms);
+        ms.Position = 0;
+
+        using var scope = _scopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var plugin = await db.Plugins.FindAsync(pluginId);
+        if (plugin == null)
+            throw new InvalidOperationException($"Plugin with Id {pluginId} not found");
+
+        var isScript = fileName.EndsWith(".csx", StringComparison.OrdinalIgnoreCase);
+        var isZip = fileName.EndsWith(".zip", StringComparison.OrdinalIgnoreCase);
+
+        string detectedName;
+        string detectedVersion;
+        string finalFileName;
+
+        if (isScript)
+        {
+            detectedName = plugin.Name;
+            detectedVersion = plugin.Version;
+            finalFileName = fileName;
+        }
+        else if (isZip)
+        {
+            var extractDir = Path.Combine(_pluginsRoot, "_update_extract");
+            Directory.CreateDirectory(extractDir);
+            try
+            {
+                var zipPath = Path.Combine(extractDir, SanitizeName(fileName));
+                ms.Position = 0;
+                await using (var fs = File.Create(zipPath))
+                    await ms.CopyToAsync(fs);
+
+                System.IO.Compression.ZipFile.ExtractToDirectory(zipPath, extractDir, true);
+
+                var dllFiles = Directory.GetFiles(extractDir, "*.dll");
+                string? assemblyFileName = null;
+
+                foreach (var dll in dllFiles)
+                {
+                    try
+                    {
+                        var asm = Assembly.LoadFrom(dll);
+                        var pluginType = asm.GetTypes()
+                            .FirstOrDefault(t => typeof(IPlugin).IsAssignableFrom(t) && !t.IsAbstract);
+
+                        if (pluginType != null)
+                        {
+                            var instance = (IPlugin)Activator.CreateInstance(pluginType)!;
+                            detectedName = instance.Name;
+                            detectedVersion = instance.Version;
+                            assemblyFileName = Path.GetFileName(dll);
+
+                            var zipPluginDir = Path.Combine(_pluginsRoot, SanitizeName(plugin.Name));
+                            Directory.CreateDirectory(zipPluginDir);
+
+                            foreach (var filePath in Directory.GetFiles(extractDir, "*", SearchOption.AllDirectories))
+                            {
+                                var name = Path.GetFileName(filePath);
+                                if (name == zipPath || name == fileName) continue;
+                                var dest = Path.Combine(zipPluginDir, name);
+                                File.Copy(filePath, dest, true);
+                            }
+
+                            finalFileName = assemblyFileName;
+                            goto done;
+                        }
+                    }
+                    catch { }
+                }
+
+                throw new InvalidOperationException("No IPlugin implementation found in the updated zip");
+            done:;
+            }
+            finally
+            {
+                try { if (Directory.Exists(extractDir)) Directory.Delete(extractDir, true); } catch { }
+            }
+        }
+        else
+        {
+            var tempDir = Path.Combine(_pluginsRoot, "_update_temp");
+            Directory.CreateDirectory(tempDir);
+            var tempPath = Path.Combine(tempDir, SanitizeName(fileName));
+            try
+            {
+                ms.Position = 0;
+                await using (var fs = File.Create(tempPath))
+                    await ms.CopyToAsync(fs);
+
+                var asm = Assembly.LoadFrom(tempPath);
+                var pluginType = asm.GetTypes()
+                    .FirstOrDefault(t => typeof(IPlugin).IsAssignableFrom(t) && !t.IsAbstract);
+
+                if (pluginType == null)
+                    throw new InvalidOperationException("No IPlugin implementation found in the updated assembly");
+
+                var instance = (IPlugin)Activator.CreateInstance(pluginType)!;
+                detectedName = instance.Name;
+                detectedVersion = instance.Version;
+                finalFileName = fileName;
+            }
+            finally
+            {
+                try { if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true); } catch { }
+            }
+        }
+
+        var pluginDir = Path.Combine(_pluginsRoot, SanitizeName(plugin.Name));
+        Directory.CreateDirectory(pluginDir);
+
+        var ext = Path.GetExtension(fileName);
+        var baseName = Path.GetFileNameWithoutExtension(fileName);
+        var newFilePath = Path.Combine(pluginDir, $"{baseName}.{DateTime.UtcNow.Ticks}{ext}");
+
+        ms.Position = 0;
+        await using (var fs = File.Create(newFilePath))
+            await ms.CopyToAsync(fs);
+
+        plugin.Version = detectedVersion;
+        plugin.AssemblyPath = Path.GetFileName(newFilePath);
+        await db.SaveChangesAsync();
+
+        if (_loadedPlugins.TryRemove(pluginId, out var oldInstance))
+        {
+            await oldInstance.OnDisableAsync();
+        }
+
+        try
+        {
+            var pluginScope = _scopeFactory.CreateScope();
+            var context = new PluginContext(
+                pluginScope, _logger,
+                pluginDir, plugin.Name);
+            var newInstance = await LoadPluginAsync(plugin, context);
+            if (newInstance != null)
+            {
+                await newInstance.OnLoadAsync(context);
+                await newInstance.OnEnableAsync();
+                _loadedPlugins[pluginId] = newInstance;
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to reload updated plugin {Name}", plugin.Name);
+        }
     }
 
     private static string SanitizeName(string name)

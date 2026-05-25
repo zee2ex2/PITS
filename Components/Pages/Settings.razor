@@ -2,10 +2,13 @@
 @using Microsoft.AspNetCore.Components
 @using Microsoft.EntityFrameworkCore
 @using PITS.Plugins
+@using System.Reflection
 @inject IServiceScopeFactory ServiceScopeFactory
 @inject IConfiguration Configuration
 @inject NavigationManager Navigation
 @inject IJSRuntime JSRuntime
+@inject PITS.Services.UpdateService UpdateService
+@inject PITS.Services.NotificationService NotificationService
 
 <PageTitle>Settings - PITS</PageTitle>
 
@@ -15,6 +18,7 @@
     <button class="tab @(_activeTab == "plugins" ? "tab-active" : "")" @onclick='() => SwitchTab("plugins")'>Plugins</button>
     <button class="tab @(_activeTab == "database" ? "tab-active" : "")" @onclick='() => SwitchTab("database")'>Database</button>
     <button class="tab @(_activeTab == "data" ? "tab-active" : "")" @onclick='() => SwitchTab("data")'>Data</button>
+    <button class="tab @(_activeTab == "updates" ? "tab-active" : "")" @onclick='() => SwitchTab("updates")'>Updates</button>
 </div>
 
 @if (_activeTab == "plugins")
@@ -113,6 +117,107 @@
                 @(_isCreating ? "Creating..." : "Create New Database")
             </button>
         </div>
+    </div>
+}
+
+@if (_activeTab == "updates")
+{
+    <div class="card">
+        <div class="section-header">
+            <h2>Software Updates</h2>
+            <button class="btn btn-primary" @onclick="CheckForUpdatesAsync" disabled="@_isCheckingUpdates">
+                @(_isCheckingUpdates ? "Checking..." : "Check for Updates")
+            </button>
+        </div>
+
+        @if (_pitsUpdate != null || _pluginUpdates.Count > 0)
+        {
+            <h3 style="margin: 1rem 0 0.5rem; font-size: 1rem;">PITS</h3>
+            <div class="card" style="padding: 0.75rem 1rem;">
+                <div style="display: flex; align-items: center; justify-content: space-between; gap: 1rem;">
+                    <span style="font-size: 0.9rem;">
+                        Current version: <strong>@_pitsCurrentVersion</strong>
+                        @if (_pitsUpdate != null)
+                        {
+                            <span style="margin-left: 0.5rem; color: var(--muted);">
+                                &rarr; Latest: <strong>@_pitsUpdate.LatestVersion</strong>
+                            </span>
+                        }
+                    </span>
+                    @if (_pitsUpdate != null)
+                    {
+                        <span class="notification-banner notification-warning" style="padding: 0.4rem 0.75rem; border-radius: 6px; font-size: 0.8rem;">
+                            A new version of PITS is available!
+                        </span>
+                    }
+                    else if (_updateChecked && _pitsUpdate == null)
+                    {
+                        <span style="color: var(--green); font-size: 0.85rem;">Up to date</span>
+                    }
+                </div>
+            </div>
+
+            <h3 style="margin: 1rem 0 0.5rem; font-size: 1rem;">Plugins</h3>
+            @if (_plugins.Count == 0)
+            {
+                <p class="empty-state">No plugins installed.</p>
+            }
+            else
+            {
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Name</th>
+                            <th>Current</th>
+                            <th>Latest</th>
+                            <th>Status</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var plugin in _plugins)
+                        {
+                            var update = _pluginUpdates.FirstOrDefault(u => u.PluginId == plugin.Id.ToString());
+                            <tr>
+                                <td>@plugin.Name</td>
+                                <td>@plugin.Version</td>
+                                <td>@(update?.LatestVersion ?? "-")</td>
+                                <td>
+                                    @if (update != null)
+                                    {
+                                        <span style="color: var(--warning); font-size: 0.85rem;">Update available</span>
+                                    }
+                                    else if (_updateChecked && !string.IsNullOrEmpty(plugin.RepoUrl))
+                                    {
+                                        <span style="color: var(--green); font-size: 0.85rem;">Up to date</span>
+                                    }
+                                    else if (string.IsNullOrEmpty(plugin.RepoUrl))
+                                    {
+                                        <span style="color: var(--muted); font-size: 0.8rem;">No repo configured</span>
+                                    }
+                                    else
+                                    {
+                                        <span style="color: var(--muted); font-size: 0.8rem;">Not checked</span>
+                                    }
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+
+                @if (_pluginUpdates.Count > 0)
+                {
+                    <div style="margin-top: 1rem;">
+                        <button class="btn btn-green" @onclick="UpdateAllPluginsAsync" disabled="@_isUpdatingPlugins">
+                            @(_isUpdatingPlugins ? "Updating..." : $"Update All Plugins ({_pluginUpdates.Count})")
+                        </button>
+                    </div>
+                }
+            }
+        }
+        else if (_updateChecked)
+        {
+            <p class="empty-state">All software is up to date.</p>
+        }
     </div>
 }
 
@@ -257,6 +362,10 @@
             }
             catch { }
         }
+
+        var version = Assembly.GetEntryAssembly()?.GetName()?.Version;
+        _pitsCurrentVersion = version != null ? $"{version.Major}.{version.Minor}.{version.Build}" : "?";
+
         await LoadPluginData();
     }
 
@@ -264,7 +373,7 @@
     {
         _activeTab = tab;
         _showForm = false;
-        if (tab == "plugins") await LoadPluginData();
+        if (tab == "plugins" || tab == "updates") await LoadPluginData();
         if (tab == "data") await LoadDataTab();
     }
 
@@ -336,7 +445,7 @@
     private async Task ResetDb()
     {
         if (!await JSRuntime.InvokeAsync<bool>("confirm",
-            "This will DELETE all inventory items, plugins, and reference data. Reference data will be re-seeded. Continue?"))
+            "This will DELETE all inventory items, stations, systems, and reference data. Reference data will be re-seeded. Plugin data will be preserved. Continue?"))
             return;
 
         _isResetting = true;
@@ -724,4 +833,84 @@
 
     private void CancelForm() => _showForm = false;
     private void HandleKeydown(KeyboardEventArgs e) { if (e.Key == "Escape") { _showForm = false; _showFileBrowser = false; } }
+
+    // ====== Updates ======
+
+    private string _pitsCurrentVersion = "";
+    private bool _updateChecked;
+    private bool _isCheckingUpdates;
+    private bool _isUpdatingPlugins;
+    private UpdateCheckResult? _pitsUpdate;
+    private List<UpdateCheckResult> _pluginUpdates = new();
+
+    private async Task CheckForUpdatesAsync()
+    {
+        _isCheckingUpdates = true;
+        _pitsUpdate = null;
+        _pluginUpdates.Clear();
+        _updateChecked = false;
+
+        try
+        {
+            var version = Assembly.GetEntryAssembly()?.GetName()?.Version;
+            _pitsCurrentVersion = version != null ? $"{version.Major}.{version.Minor}.{version.Build}" : "?";
+
+            var pitsResult = await UpdateService.CheckPitsUpdateAsync();
+            if (pitsResult != null)
+                _pitsUpdate = pitsResult;
+
+            var pluginResults = await UpdateService.CheckPluginUpdatesAsync(_plugins);
+            _pluginUpdates = pluginResults;
+
+            var count = (pitsResult != null ? 1 : 0) + pluginResults.Count;
+            if (count > 0)
+                NotificationService.Push(NotificationType.Warning, $"{count} update{(count != 1 ? "s" : "")} available");
+            else
+                NotificationService.Push(NotificationType.Success, "All software is up to date");
+        }
+        catch (Exception ex)
+        {
+            NotificationService.Push(NotificationType.UserError, $"Update check failed: {ex.Message}");
+        }
+        finally
+        {
+            _updateChecked = true;
+            _isCheckingUpdates = false;
+        }
+    }
+
+    private async Task UpdateAllPluginsAsync()
+    {
+        _isUpdatingPlugins = true;
+        var successCount = 0;
+        var failCount = 0;
+
+        try
+        {
+            foreach (var update in _pluginUpdates)
+            {
+                if (update.DownloadUrl == null || !int.TryParse(update.PluginId, out var pluginId)) continue;
+
+                var ok = await UpdateService.UpdatePluginAsync(pluginId, update.DownloadUrl);
+                if (ok) successCount++; else failCount++;
+            }
+
+            await LoadPluginData();
+
+            if (failCount == 0)
+                NotificationService.Push(NotificationType.Success, $"Updated {successCount} plugin{(successCount != 1 ? "s" : "")}");
+            else
+                NotificationService.Push(NotificationType.Warning, $"Updated {successCount}, failed {failCount} plugin{(failCount != 1 ? "s" : "")}");
+
+            _pluginUpdates.Clear();
+        }
+        catch (Exception ex)
+        {
+            NotificationService.Push(NotificationType.UserError, $"Update failed: {ex.Message}");
+        }
+        finally
+        {
+            _isUpdatingPlugins = false;
+        }
+    }
 }
